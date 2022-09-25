@@ -1,4 +1,4 @@
-
+import numpy as np
 class Market:
     def __init__(self, n_users, n_items, demands=None, capacities=None, sample_proc=None, max_util=1):
         # If capacities or demands are not supplied, set equal to 1
