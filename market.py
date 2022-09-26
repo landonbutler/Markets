@@ -2,7 +2,7 @@ import numpy as np
 
 
 class Market:
-    def __init__(self, n_users, n_arms, demands=None, capacities=None, sample_proc=None, max_util=1):
+    def __init__(self, n_users, n_arms, demands=None, capacities=None, sample_proc=None, max_util=1, seed=None):
         assert 0 < n_users == int(n_users), 'n_users not a positive integer'
         assert 0 < n_arms == int(n_arms), 'n_arms not a positive integer'
         assert n_arms >= n_users, 'less arms than users'
@@ -31,9 +31,10 @@ class Market:
         self.capacities = capacities
         self.max_util = max_util
         self.utilities = None
-        self.provider_prefs = None
+        self.arm_prefs = None
         self.sample_proc = sample_proc
 
+        np.random.seed(seed)
         self.sample_utilities()
 
         self.low_conf = np.zeros((self.n_users, self.n_arms))
@@ -48,8 +49,5 @@ class Market:
             self.arm_prefs = np.random.uniform(0, self.max_util, size=(self.n_users, self.n_arms))
 
     def clear(self):
-        # Resample utilities and restart confidence intervals
-        self.sample_utilities()
-
         self.low_conf = np.zeros((self.n_users, self.n_arms))
         self.upp_conf = self.max_util * np.ones((self.n_users, self.n_arms))

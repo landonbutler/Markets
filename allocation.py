@@ -1,17 +1,15 @@
 from abc import ABC, abstractmethod
 
 import numpy as np
+import pyomo
 
 
 class Allocation(ABC):
     def __init__(self, market):
         self.market = market
 
-        self.allocation, self.arm_counts, self.demand_counts = None, None, None
+        self.allocation, self.arm_counts, self.demand_counts, self.prices = None, None, None, None
         self.clear_allocation()
-
-    def clear_market(self):
-        self.market = self.market.clear
 
     def return_allocation(self):
         return self.allocation
@@ -23,6 +21,15 @@ class Allocation(ABC):
     @abstractmethod
     def allocate(self, validate=True):
         # Needs to be implemented by all subclasses
+        pass
+
+    def surplus(self):
+        pass
+
+    def dissatisfaction(self):
+        pass
+
+    def acceptances(self):
         pass
 
     def count_arms(self):
@@ -67,18 +74,14 @@ class GaleShapley(Allocation):
         # Only 1 arm allocated to everyone, so just check 1st column
         # If any user is unallocated, continue matching
         while np.any(self.allocation[:, 0] == -1):
-            print('loop')
             # Get top arm for each unmatched user based on their current utilities
             unmatched_users = np.arange(self.market.n_users)[self.allocation[:, 0] == -1]
-            print(unmatched_users)
             top_arm = np.argmax(cur_utilities[unmatched_users], axis=1)
             for i, arm_id in enumerate(top_arm):
                 user_id = unmatched_users[i]
                 # If proposed arm prefers new user, will match with new user
                 old_match = cur_arm_match[arm_id]
-                print(user_id, arm_id, old_match)
                 if old_match == -1:
-
                     # Arm is unmmatched, so match it with new user
                     self.allocation[user_id, 0] = arm_id
                     cur_arm_match[arm_id] = user_id
@@ -98,7 +101,7 @@ class GaleShapley(Allocation):
             self.validate_allocation()
 
 
-# Greedy_UCB: all users get allocated arm with highest UCB, regardless of overlaps
+# OptSolution: optimal allocation and prices with known utilities
 class GreedyUCB(Allocation):
     def __init__(self, market):
         super().__init__(market)
