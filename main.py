@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 
 from market import *
 from allocation import *
+import sys
 
 # Experiment constants
 constants = {
@@ -72,6 +73,7 @@ def plots(fp, results, constants):
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
+    print(sys.path)
     # Creates variables from constants dictionary
     for key, val in constants.items():
         if isinstance(val, str):

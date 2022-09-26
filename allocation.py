@@ -1,14 +1,14 @@
 from abc import ABC, abstractmethod
 
 import numpy as np
-import pyomo
+from pyomoSolver import *
 
 
 class Allocation(ABC):
     def __init__(self, market):
         self.market = market
 
-        self.allocation, self.arm_counts, self.demand_counts, self.prices = None, None, None, None
+        self.allocation, self.prices, self.arm_counts, self.demand_counts, = None, None, None, None
         self.clear_allocation()
 
     def return_allocation(self):
@@ -24,12 +24,15 @@ class Allocation(ABC):
         pass
 
     def surplus(self):
+        # TODO implement surplus
         pass
 
     def dissatisfaction(self):
+        # TODO implement dissatisfaction
         pass
 
     def acceptances(self):
+        # TODO implement acceptances
         pass
 
     def count_arms(self):
@@ -59,62 +62,18 @@ class Allocation(ABC):
         assert np.all(self.demand_counts <= self.market.demands), 'a user is allocated more arms than its demand'
 
 
-# Greedy_UCB: all users get allocated arm with highest UCB, regardless of overlaps
-class GaleShapley(Allocation):
-    def __init__(self, market):
-        super().__init__(market)
-
-    def allocate(self, validate=True):
-        # Unallocate everyone (necessary for multi-arm allocation)
-        self.clear_allocation()
-
-        cur_utilities = self.market.utilities.copy()
-        cur_arm_match = -1 * np.ones(self.market.n_arms, dtype=int)
-
-        # Only 1 arm allocated to everyone, so just check 1st column
-        # If any user is unallocated, continue matching
-        while np.any(self.allocation[:, 0] == -1):
-            # Get top arm for each unmatched user based on their current utilities
-            unmatched_users = np.arange(self.market.n_users)[self.allocation[:, 0] == -1]
-            top_arm = np.argmax(cur_utilities[unmatched_users], axis=1)
-            for i, arm_id in enumerate(top_arm):
-                user_id = unmatched_users[i]
-                # If proposed arm prefers new user, will match with new user
-                old_match = cur_arm_match[arm_id]
-                if old_match == -1:
-                    # Arm is unmmatched, so match it with new user
-                    self.allocation[user_id, 0] = arm_id
-                    cur_arm_match[arm_id] = user_id
-                    print(f'Matched user {user_id} with arm {arm_id}')
-                elif self.market.arm_prefs[user_id, arm_id] > self.market.arm_prefs[old_match, arm_id]:
-                    # Arm prefers new user over the old user
-                    self.allocation[user_id, 0] = arm_id
-                    cur_arm_match[arm_id] = user_id
-                    self.allocation[old_match, 0] = -1
-                    cur_utilities[old_match, arm_id] = -1
-                    print(f'Matched user {user_id} with arm {arm_id}, unmatched {old_match}')
-                else:
-                    # Arm prefers old user, so new user will never get matched to it
-                    cur_utilities[user_id, arm_id] = -1
-                    print(f'Failed matching {user_id} with arm {arm_id}')
-        if validate:
-            self.validate_allocation()
-
-
 # OptSolution: optimal allocation and prices with known utilities
-class GreedyUCB(Allocation):
+class OptSolution(Allocation):
     def __init__(self, market):
         super().__init__(market)
 
     def allocate(self, validate=True):
-        # Get top arm for each user
-        allocation = np.argmax(self.market.upp_conf, axis=1)
+        # Instantiate solver
+        solver = PyomoSolver(self.market.n_users, self.market.n_arms, self.market.capacities, self.market.demands)
 
-        # Unallocate everyone (necessary for multi-arm allocation)
-        self.clear_allocation()
-
-        # Fill in allocation
-        self.allocation[:, 0] = allocation
+        # Solve system with true utilities
+        self.allocation = solver.solve_system(self.market.utilities)
+        self.prices = solver.get_prices() - 1e-8
 
         if validate:
             self.validate_allocation()
