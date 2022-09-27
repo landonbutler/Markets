@@ -8,15 +8,19 @@ class Allocation(ABC):
     def __init__(self, market):
         self.market = market
 
-        self.allocation, self.prices, self.arm_counts, self.demand_counts, = None, None, None, None
+        self.allocation, self.acc_alloc, self.prices, self.arm_counts, self.demand_counts, = None, None, None, None
         self.clear_allocation()
+
+        # Instantiate solver
+        self.solver = PyomoSolver(self.market.n_users, self.market.n_arms, self.market.capacities, self.market.demands)
 
     def return_allocation(self):
         return self.allocation
 
     def clear_allocation(self):
-        self.allocation = -1 * np.ones((self.market.n_users, self.market.max_demand))
-        self.validate_allocation()
+        self.allocation = -1 * np.ones((self.market.n_users, self.market.n_arms))
+        # TODO add this back in
+        # self.validate_allocation()
 
     @abstractmethod
     def allocate(self, validate=True):
@@ -24,34 +28,54 @@ class Allocation(ABC):
         pass
 
     def surplus(self):
-        # TODO implement surplus
-        pass
+        # Sum of element-wise multiplication of allocation by true utilities
+        return np.sum(np.multiply(self.allocation, self.market.utilities))
 
     def dissatisfaction(self):
-        # TODO implement dissatisfaction
-        pass
+        # First, finds current surplus, which is the sum of element-wise
+        # multiplication of allocation by the different between the true utilities and the prices
+        # Next, finds best surplus, which is the max difference between true utilities and the prices (or 0)
+        # Finally, the dissatisfcation is the difference between these two, summed across all users
 
-    def acceptances(self):
-        # TODO implement acceptances
-        pass
+        current_surplus = np.sum(np.multiply(self.allocation, self.market.utilities - self.prices), axis=1)
+        best_surplus = np.maximum(np.max(self.market.utilities - self.prices, axis=1), 0)
+        return np.sum(best_surplus - current_surplus)
+
+    def acceptance_rate(self):
+        # Acceptance rate of offers
+        return np.sum(self.acc_alloc) / np.sum(self.allocation)
+
+    def filter_decisions(self):
+        # Determines which arms would be accepted for the given price,
+        # then intersects these with the current allocation
+        accepted = np.int32(self.market.utilities >= self.prices)
+        self.acc_alloc = np.multiply(self.allocation, accepted)
+
+    def get_proxies(self, alpha):
+        # Returns a point in the confidence interval to be used as a heuristic for true utility
+        return self.market.low_conf + alpha * (self.market.upp_conf - self.market.low_conf)
+
+    def update_conf_intervals(self, acc_alloc, rej_alloc):
+        rej_alloc = self.allocation - self.acc_alloc
+        # Updates confidence intervals using allocations that were rejected and accepted
+        prices_extended = np.tile(self.prices, (self.market.n_users, 1))
+        self.market.low_conf = np.maximum(self.market.low_conf,
+                                          acc_alloc * prices_extended + (1 - acc_alloc) * self.market.low_conf)
+        self.market.upp_conf = np.minimum(self.market.upp_conf,
+                                          rej_alloc * prices_extended + (1 - rej_alloc) * self.market.upp_conf)
 
     def count_arms(self):
-        # Counts the number of times each arm is allocated, returns in a vector with
-        # arm count in the corresponding index
-        unique, counts = np.unique(self.allocation, return_counts=True)
-        arm_counts = np.zeros(self.market.n_arms)
-        if np.any(unique > -1):
-            arm_counts[unique.astype(int)] = counts
-        self.arm_counts = arm_counts
+        # Counts the number of users each arm is allotted to
+        self.arm_counts = np.sum(self.allocation, axis=0)
 
     def count_demand(self):
-        self.demand_counts = np.count_nonzero(self.allocation + 1, axis=1)
+        # Counts the number of arms each user is pulling
+        self.demand_counts = np.sum(self.allocation, axis=1)
 
     def validate_allocation(self):
         assert self.allocation.shape[0] == self.market.n_users, 'allocation is not equal in length to n_users'
-        assert self.allocation.shape[1] == self.market.max_demand, 'allocation does not support current max_demand'
-        assert np.min(self.allocation) >= -1, 'allocation contains negative values < -1'
-        assert np.max(self.allocation) <= self.market.n_arms, 'allocation contains allocated values > n_arms'
+        assert self.allocation.shape[1] == self.market.n_arms, 'allocation is not equal in width to n_arms'
+        assert np.min(self.allocation) >= 0, 'allocation contains negative values'
 
         # Check that no arm is allocated more than its capacity
         self.count_arms()
@@ -68,12 +92,74 @@ class OptSolution(Allocation):
         super().__init__(market)
 
     def allocate(self, validate=True):
-        # Instantiate solver
-        solver = PyomoSolver(self.market.n_users, self.market.n_arms, self.market.capacities, self.market.demands)
-
         # Solve system with true utilities
-        self.allocation = solver.solve_system(self.market.utilities)
-        self.prices = solver.get_prices() - 1e-8
+        self.allocation = self.solver.solve_system(self.market.utilities)
+        self.prices = self.solver.get_prices() - 1e-8
+        self.filter_decisions()
+
+        if validate:
+            self.validate_allocation()
+
+
+# UCBSmoothed: optimal allocation and prices with known utilities
+class UCBSmoothed(Allocation):
+    def __init__(self, market):
+        super().__init__(market)
+
+    def compute_smoothed_prices(self, unsmoothed_prices):
+        # TODO fix this method
+        p_extended = np.tile(p_w, (N, 1))
+        B = R_upper - p_extended
+        A = R_lower - p_extended
+        A_max = np.max(A, axis=1)
+
+        other_and_valid = (1 - x) * (B.T > A_max).T
+        B_other_min = np.min(B * other_and_valid + 10 * max_R * (1 - other_and_valid), axis=1)
+
+        B_second_max = np.max(B * (1 - x) - 10 * max_R * x, axis=1)
+
+        other_best_surplus = np.max((R_upper - p_w) * (1 - x), axis=1)
+        current_worst_surplus = np.sum((R_lower - p_w) * x, axis=1)
+
+        current_best_surplus = np.sum((R_upper - p_w) * x, axis=1)
+
+        current_R_lower = np.sum(R_lower * x, axis=1)
+        current_R_upper = np.sum(R_upper * x, axis=1)
+
+        opt_found = np.bitwise_and(current_worst_surplus - other_best_surplus + 1e-8 > 0,
+                                   current_worst_surplus + 1e-8 > 0)
+
+        p_w_user = x @ p_w
+        p_user = np.zeros(N)
+        for n in range(N):
+            if opt_found[n]:
+                p_user[n] = p_w_user[n] - 1e-8
+            else:
+                p_min = current_R_lower[n] + 0.25 * (current_R_upper[n] - current_R_lower[n])
+                p_max = current_R_lower[n] + 0.75 * (current_R_upper[n] - current_R_lower[n])
+                p_center = current_R_lower[n] + 0.5 * (current_R_upper[n] - current_R_lower[n])
+                p_len = current_R_upper[n] - current_R_lower[n]
+                alpha = 4
+                p_user[n] = p_w_user[n]
+                if p_len > 1e-10:
+                    p_user[n] = p_min + (p_max - p_min) / (1 + np.exp(-alpha * (p_user[n] - p_center) / p_len))
+                else:
+                    p_user[n] = p_min
+
+        p = x.T @ p_user
+
+        return p
+
+    def allocate(self, validate=True):
+        # gets a point in each interval
+        utility_proxies = self.get_proxies(1)
+        self.allocation = self.solver.solve_system(utility_proxies)
+        unsmoothed_prices = self.solver.get_prices() - 1e-8
+
+        self.prices = self.compute_smoothed_prices(unsmoothed_prices)
+
+        self.filter_decisions()
+        self.update_intervals()
 
         if validate:
             self.validate_allocation()

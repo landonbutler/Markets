@@ -6,19 +6,19 @@ import matplotlib.pyplot as plt
 
 from market import *
 from allocation import *
-import sys
 
 # Experiment constants
 constants = {
     'max_timesteps': 500,
     'n_trials': 10,
-    'n_users': 100,
-    'n_arms': 100,
+    'n_users': 3,
+    'n_arms': 5,
     'noise_param': 1,
     'max_util': 1,
     'sample_proc': "beta",
     'seed': 34,
-    'algorithms': ['GaleShapley', 'UCBSmoothed', 'UCBClipped', 'UCBHalf', 'UCBThreeQuarters'],
+    'algorithms': [],
+    # 'algorithms': ['UCBSmoothed', 'UCBClipped', 'UCBHalf', 'UCBThreeQuarters'],
     'lam': 1
 }
 
@@ -73,7 +73,6 @@ def plots(fp, results, constants):
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    print(sys.path)
     # Creates variables from constants dictionary
     for key, val in constants.items():
         if isinstance(val, str):
@@ -117,9 +116,9 @@ if __name__ == '__main__':
 
             for ts in range(max_timesteps):
                 alloc.allocate()
-                rewards[algo_id, ts, trial] = opt_sol.surplus()
-                dissatisfactions[algo_id, ts, trial] = opt_sol.dissatisfaction()
-                acceptances[algo_id, ts, trial] = opt_sol.acceptances()
+                rewards[algo_id, ts, trial] = alloc.surplus()
+                dissatisfactions[algo_id, ts, trial] = alloc.dissatisfaction()
+                acceptances[algo_id, ts, trial] = alloc.acceptances()
 
             market.clear()
 
