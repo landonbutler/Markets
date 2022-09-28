@@ -5,7 +5,6 @@ class Market:
     def __init__(self, n_users, n_arms, demands=None, capacities=None, sample_proc=None, max_util=1, seed=None):
         assert 0 < n_users == int(n_users), 'n_users not a positive integer'
         assert 0 < n_arms == int(n_arms), 'n_arms not a positive integer'
-        assert n_arms >= n_users, 'less arms than users'
 
         # If capacities or demands are not supplied, set equal to 1
         if not demands:
