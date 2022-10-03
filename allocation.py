@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
 
 import numpy as np
+import gym
 
 np.seterr(over='ignore')
 from pyomoSolver import *
+from learningEnv import *
+from stable_baselines3 import PPO
 
 
 class Allocation(ABC):
@@ -11,7 +14,7 @@ class Allocation(ABC):
         self.market = market
 
         self.allocation, self.acc_alloc = None, None
-        self.prices = None
+        self.init_prices, self.prices = None, None
         self.arm_counts, self.demand_counts = None, None
 
         # Instantiate an empty allocation
@@ -24,7 +27,8 @@ class Allocation(ABC):
         return self.allocation
 
     def clear_allocation(self):
-        self.allocation = np.zeros((self.market.n_users, self.market.n_arms))
+        self.allocation = np.zeros((self.market.n_users, self.market.n_arms), dtype=np.int32)
+        self.init_prices, self.prices = np.ones(self.market.n_arms), np.ones(self.market.n_arms)
         self.validate_allocation()
 
     @abstractmethod
@@ -112,18 +116,18 @@ class UCBHalf(Allocation):
     def __init__(self, market):
         super().__init__(market)
 
-    def compute_adjusted_prices(self, unadjusted_prices, delta=1e-7):
+    def compute_adjusted_prices(self, delta=1e-7):
         p_learn = np.max(np.multiply(self.get_proxies(0.5), self.allocation), axis=0)
         to_learn = np.max(np.multiply(self.allocation, (self.market.upp_conf - self.market.low_conf > delta)),
                           axis=0) > 0
-        self.prices = to_learn * p_learn + (1 - to_learn) * unadjusted_prices
+        self.prices = to_learn * p_learn + (1 - to_learn) * self.init_prices
 
     def allocate(self, validate=True):
         utility_proxies = self.get_proxies(1)
         self.allocation = self.solver.solve_system(utility_proxies)
-        unadjusted_prices = self.solver.get_prices() - 1e-8
+        self.init_prices = self.solver.get_prices() - 1e-8
 
-        self.compute_adjusted_prices(unadjusted_prices)
+        self.compute_adjusted_prices()
 
         self.filter_decisions()
         self.update_conf_intervals()
@@ -137,18 +141,18 @@ class UCBThreeQuarters(Allocation):
     def __init__(self, market):
         super().__init__(market)
 
-    def compute_adjusted_prices(self, unadjusted_prices, delta=1e-7):
+    def compute_adjusted_prices(self, delta=1e-7):
         p_learn = np.max(np.multiply(self.get_proxies(0.75), self.allocation), axis=0)
         to_learn = np.max(np.multiply(self.allocation, (self.market.upp_conf - self.market.low_conf > delta)),
                           axis=0) > 0
-        self.prices = to_learn * p_learn + (1 - to_learn) * unadjusted_prices
+        self.prices = to_learn * p_learn + (1 - to_learn) * self.init_prices
 
     def allocate(self, validate=True):
         utility_proxies = self.get_proxies(1)
         self.allocation = self.solver.solve_system(utility_proxies)
-        unadjusted_prices = self.solver.get_prices() - 1e-8
+        self.init_prices = self.solver.get_prices() - 1e-8
 
-        self.compute_adjusted_prices(unadjusted_prices)
+        self.compute_adjusted_prices()
 
         self.filter_decisions()
         self.update_conf_intervals()
@@ -162,47 +166,84 @@ class UCBClipped(Allocation):
     def __init__(self, market):
         super().__init__(market)
 
-    def compute_clipped_prices(self, unclipped_prices):
-        extended_prices = np.tile(unclipped_prices, (self.market.n_users, 1))
-        A = self.market.low_conf - extended_prices
-        A_max = np.max(A, axis=1)
-        B = self.market.upp_conf - extended_prices
-
-        other_and_valid = np.multiply(1 - self.allocation, (B.T > A_max).T)
-        # B_other_min = np.min(B * other_and_valid + 10 * self.market.max_util * (1 - other_and_valid), axis=1)
-
-        # B_second_max = np.max(B * (1 - self.allocation) - 10 * self.market.max_util * self.allocation, axis=1)
-
-        other_best_surplus = np.max((self.market.upp_conf - unclipped_prices) * (1 - self.allocation), axis=1)
-        current_worst_surplus = np.sum((self.market.low_conf - unclipped_prices) * self.allocation, axis=1)
-
-        # current_best_surplus = np.sum((self.market.upp_conf - unsmoothed_prices) * self.allocation, axis=1)
-
-        current_r_lower = np.sum(np.multiply(self.market.low_conf, self.allocation), axis=1)
-        current_r_upper = np.sum(np.multiply(self.market.upp_conf, self.allocation), axis=1)
+    def compute_clipped_prices(self, alpha=0.25, beta=0.75):
+        other_best_surplus = np.max((self.market.upp_conf - self.init_prices) * (1 - self.allocation), axis=1)
+        current_worst_surplus = np.sum((self.market.low_conf - self.init_prices) * self.allocation, axis=1)
 
         opt_found = np.bitwise_and(current_worst_surplus - other_best_surplus + 1e-8 > 0,
                                    current_worst_surplus + 1e-8 > 0)
 
-        p_w_user = self.allocation @ unclipped_prices
+        current_r_lower = np.sum(np.multiply(self.market.low_conf, self.allocation), axis=1)
+        current_r_upper = np.sum(np.multiply(self.market.upp_conf, self.allocation), axis=1)
+
+        p_w_user = self.allocation @ self.init_prices
         p_user = np.zeros(self.market.n_users)
         for n in range(self.market.n_users):
             if opt_found[n]:
                 p_user[n] = p_w_user[n] - 1e-8
             else:
-                smallest_price = current_r_lower[n] + 0.25 * (current_r_upper[n] - current_r_lower[n])
-                largest_price = current_r_lower[n] + 0.75 * (current_r_upper[n] - current_r_lower[n])
+                smallest_price = current_r_lower[n] + alpha * (current_r_upper[n] - current_r_lower[n])
+                largest_price = current_r_lower[n] + beta * (current_r_upper[n] - current_r_lower[n])
+                p_user[n] = p_w_user[n]
+                p_user[n] = np.minimum(np.maximum(p_user[n], smallest_price), largest_price)
+
+        self.prices = self.allocation.T @ p_user
+
+    def allocate(self, validate=True, alpha=0.25, beta=0.75):
+        utility_proxies = self.get_proxies(1)
+        self.allocation = self.solver.solve_system(utility_proxies)
+        self.init_prices = self.solver.get_prices() - 1e-8
+
+        self.compute_clipped_prices(alpha, beta)
+
+        self.filter_decisions()
+        self.update_conf_intervals()
+
+        if validate:
+            self.validate_allocation()
+
+
+# UCBClippedLearned: TODO fill in description
+class UCBClippedLearned(Allocation):
+    def __init__(self, market):
+        super().__init__(market)
+        # load model that determines static alpha, beta coefficients
+        self.model = PPO.load('models/UCBclipped.zip', env=ClippedWalrasianEnv)
+
+    def compute_clipped_prices(self, alpha=0.25, beta=0.75):
+        other_best_surplus = np.max((self.market.upp_conf - self.init_prices) * (1 - self.allocation), axis=1)
+        current_worst_surplus = np.sum((self.market.low_conf - self.init_prices) * self.allocation, axis=1)
+
+        opt_found = np.bitwise_and(current_worst_surplus - other_best_surplus + 1e-8 > 0,
+                                   current_worst_surplus + 1e-8 > 0)
+
+        current_r_lower = np.sum(np.multiply(self.market.low_conf, self.allocation), axis=1)
+        current_r_upper = np.sum(np.multiply(self.market.upp_conf, self.allocation), axis=1)
+
+        p_w_user = self.allocation @ self.init_prices
+        p_user = np.zeros(self.market.n_users)
+
+        for n in range(self.market.n_users):
+            if opt_found[n]:
+                p_user[n] = p_w_user[n] - 1e-8
+            else:
+                smallest_price = current_r_lower[n] + alpha * (current_r_upper[n] - current_r_lower[n])
+                largest_price = current_r_lower[n] + beta * (current_r_upper[n] - current_r_lower[n])
                 p_user[n] = p_w_user[n]
                 p_user[n] = np.minimum(np.maximum(p_user[n], smallest_price), largest_price)
 
         self.prices = self.allocation.T @ p_user
 
     def allocate(self, validate=True):
+
         utility_proxies = self.get_proxies(1)
         self.allocation = self.solver.solve_system(utility_proxies)
-        unclipped_prices = self.solver.get_prices() - 1e-8
+        self.init_prices = self.solver.get_prices() - 1e-8
 
-        self.compute_clipped_prices(unclipped_prices)
+        action, _ = self.model.predict((self.market.low_conf, self.market.upp_conf, self.allocation, unclipped_prices))
+        alpha, beta = action[0], action[1]
+
+        self.compute_clipped_prices(alpha, beta)
 
         self.filter_decisions()
         self.update_conf_intervals()
@@ -216,8 +257,8 @@ class UCBSmoothed(Allocation):
     def __init__(self, market):
         super().__init__(market)
 
-    def compute_smoothed_prices(self, unsmoothed_prices):
-        extended_prices = np.tile(unsmoothed_prices, (self.market.n_users, 1))
+    def compute_smoothed_prices(self):
+        extended_prices = np.tile(self.init_prices, (self.market.n_users, 1))
         A = self.market.low_conf - extended_prices
         A_max = np.max(A, axis=1)
         B = self.market.upp_conf - extended_prices
@@ -227,8 +268,8 @@ class UCBSmoothed(Allocation):
 
         # B_second_max = np.max(B * (1 - self.allocation) - 10 * self.market.max_util * self.allocation, axis=1)
 
-        other_best_surplus = np.max((self.market.upp_conf - unsmoothed_prices) * (1 - self.allocation), axis=1)
-        current_worst_surplus = np.sum((self.market.low_conf - unsmoothed_prices) * self.allocation, axis=1)
+        other_best_surplus = np.max((self.market.upp_conf - self.init_prices) * (1 - self.allocation), axis=1)
+        current_worst_surplus = np.sum((self.market.low_conf - self.init_prices) * self.allocation, axis=1)
 
         # current_best_surplus = np.sum((self.market.upp_conf - unsmoothed_prices) * self.allocation, axis=1)
 
@@ -238,7 +279,7 @@ class UCBSmoothed(Allocation):
         opt_found = np.bitwise_and(current_worst_surplus - other_best_surplus + 1e-8 > 0,
                                    current_worst_surplus + 1e-8 > 0)
 
-        p_w_user = self.allocation @ unsmoothed_prices
+        p_w_user = self.allocation @ self.init_prices
         p_user = np.zeros(self.market.n_users)
         for n in range(self.market.n_users):
             if opt_found[n]:
@@ -260,9 +301,9 @@ class UCBSmoothed(Allocation):
     def allocate(self, validate=True):
         utility_proxies = self.get_proxies(1)
         self.allocation = self.solver.solve_system(utility_proxies)
-        unsmoothed_prices = self.solver.get_prices() - 1e-8
+        self.init_prices = self.solver.get_prices() - 1e-8
 
-        self.compute_smoothed_prices(unsmoothed_prices)
+        self.compute_smoothed_prices()
 
         self.filter_decisions()
         self.update_conf_intervals()

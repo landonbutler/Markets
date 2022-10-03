@@ -83,7 +83,6 @@ def plots(fp, results, constants):
     plt.clf()
 
 
-# Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     print('Instantiating experiment...')
     # Creates variables from constants dictionary
